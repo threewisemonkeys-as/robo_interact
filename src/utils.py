@@ -1,8 +1,16 @@
 import time
 import logging
+import random
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
+from PIL import Image
+
+
+
+CUR_DIR = Path(__file__).resolve().parent
 
 
 # Configure logging
@@ -135,3 +143,119 @@ sampled_point_marker='o',
     
     ax.imshow(img)
     logger.info(f"Visualization completed in {time.time() - start_time:.2f} seconds")
+
+
+
+
+def get_masks(
+    model_name: str,
+    image: Image,
+):
+    image = np.array(image.convert("RGB"))
+
+    sam_mask_generator = get_sam_mask_generator(model_name)
+    
+    logger.info("Generating masks - this may take some time")
+    mask_start = time.time()
+    masks = sam_mask_generator.generate(image)
+    logger.info(f"Generated {len(masks)} masks in {time.time() - mask_start:.2f} seconds")
+    
+    return masks
+
+
+def sample_points_from_masks(masks, points_per_mask=5, seed=None):
+    """
+    Randomly sample points from each segmentation mask.
+    
+    Args:
+        masks (list): List of mask dictionaries returned by get_masks()
+        points_per_mask (int): Number of points to sample from each mask
+        seed (int, optional): Random seed for reproducibility
+        
+    Returns:
+        list: List of lists, where each inner list contains sampled points
+              as (x, y) coordinate tuples for a mask
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        
+    all_sampled_points = []
+    
+    for i, mask in enumerate(masks):
+        # Get the segmentation mask
+        segmentation = mask['segmentation']
+        
+        # Find all coordinates where the mask is True (1)
+        y_coords, x_coords = np.where(segmentation)
+        
+        # Combine into (x, y) coordinate pairs
+        valid_points = list(zip(x_coords, y_coords))
+        
+        # If no valid points found, continue to the next mask
+        if not valid_points:
+            all_sampled_points.append([])
+            continue
+            
+        # Sample points (or take all if fewer than requested)
+        if len(valid_points) <= points_per_mask:
+            sampled_points = valid_points
+        else:
+            # Randomly sample points without replacement
+            indices = np.random.choice(len(valid_points), points_per_mask, replace=False)
+            sampled_points = [valid_points[i] for i in indices]
+        
+        all_sampled_points.append(sampled_points)
+        
+    return all_sampled_points
+
+def get_sam_mask_generator(
+    name: str
+):
+    
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    logger.info(f"Using device: {device}")
+    model_start = time.time()
+
+    if name == "sam":
+        from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+
+        sam_checkpoint: str = CUR_DIR.parent / "3p/sam_ckpts/sam_vit_h_4b8939.pth"
+        model_type: str = "vit_h"
+
+        # Initialize the SAM model using the registry
+        sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+        sam.to(device=device)
+        logger.info(f"Model loaded in {time.time() - model_start:.2f} seconds")
+        
+        # Mask generation
+        mask_start = time.time()
+        logger.info("Initializing mask generator")
+        mask_generator = SamAutomaticMaskGenerator(
+            sam,
+            pred_iou_thresh=0.95,
+        )
+        logger.info(f"Model loaded in {time.time() - model_start:.2f} seconds")
+
+    elif name == "sam2":
+        from sam2.build_sam import build_sam2
+        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
+        sam2_checkpoint = CUR_DIR.parent / "3p/sam2_ckpts/sam2.1_hiera_large.pt"
+        model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+        sam2 = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=False)
+        logger.info(f"Model loaded in {time.time() - model_start:.2f} seconds")
+        
+        # Mask generation
+        mask_start = time.time()
+        logger.info("Initializing mask generator")
+        mask_generator = SAM2AutomaticMaskGenerator(sam2)
+        logger.info(f"Model loaded in {time.time() - model_start:.2f} seconds")
+        
+
+    else:
+        raise ValueError(f"Unknown model name: {name}")
+    
+
+    return mask_generator
