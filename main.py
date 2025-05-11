@@ -2,17 +2,27 @@ import time
 import logging
 import random
 from pathlib import Path
+import base64
+import mimetypes
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Set this before importing pyplot
 import matplotlib.pyplot as plt
+
 import torch
 from PIL import Image
+from cv_bridge import CvBridge
+import pyrealsense2 as rs
+import openai
 
 import rospy
 from sensor_msgs.msg import Image as ROSSensorImage 
 from sensor_msgs.msg import CameraInfo
-import pyrealsense2 as rs
-import numpy as np
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 CUR_DIR = Path(__file__).resolve().parent
@@ -22,9 +32,27 @@ CUR_DIR = Path(__file__).resolve().parent
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
+    force=True  # Force override any existing configuration
 )
+
+# Create console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+
+# Get logger and add handlers
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(console_handler)
+
+# Make sure logs will display
+logger.propagate = True
+
+# Test log message
+logger.info("Logging system initialized")
+
 
 def show_anns(anns, borders=True, show_boxes=True, show_points=True, sampled_points=None,
 sampled_point_marker='o', 
@@ -150,8 +178,6 @@ sampled_point_marker='o',
     logger.info(f"Visualization completed in {time.time() - start_time:.2f} seconds")
 
 
-
-
 def get_masks(
     model_name: str,
     image: Image,
@@ -214,6 +240,7 @@ def sample_points_from_masks(masks, points_per_mask=5, seed=None):
         
     return all_sampled_points
 
+
 def get_sam_mask_generator(
     name: str
 ):
@@ -266,7 +293,6 @@ def get_sam_mask_generator(
     return mask_generator
 
 
-
 def get_3d_point_from_pixel(pixel_coord):
     """
     Convert a 2D pixel coordinate to a 3D point using the RealSense depth camera.
@@ -282,13 +308,15 @@ def get_3d_point_from_pixel(pixel_coord):
     
     # Make sure ROS node is initialized
     if not rospy.core.is_initialized():
+        logger.info("Initializing ROS node for 3D point conversion")
         rospy.init_node('pixel_to_3d_converter', anonymous=True)
+        logger.info("ROS node initialized")
     
     try:
         # Get depth image
-        print(f"Waiting for depth image on topic '/camera/aligned_depth_to_color/image_raw'")
+        logger.info(f"Waiting for depth image on topic '/camera/aligned_depth_to_color/image_raw'")
         depth_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/image_raw', ROSSensorImage, timeout=2.0)
-        print(f"Received depth image")
+        logger.info(f"Received depth image")
         
         # Convert ROS Image message to numpy array
         from cv_bridge import CvBridge
@@ -296,9 +324,9 @@ def get_3d_point_from_pixel(pixel_coord):
         depth_image = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
         
         # Get camera intrinsics
-        print(f"Waiting for camera info on topic '/camera/aligned_depth_to_color/camera_info'")
+        logger.info(f"Waiting for camera info on topic '/camera/aligned_depth_to_color/camera_info'")
         camera_info_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/camera_info', CameraInfo, timeout=2.0)
-        print(f"Received camera info")
+        logger.info(f"Received camera info")
         
         # Create RealSense intrinsics object
         intrinsics = rs.intrinsics()
@@ -318,7 +346,7 @@ def get_3d_point_from_pixel(pixel_coord):
         
         # Check if depth is valid
         if depth_mm <= 0 or np.isnan(depth_mm):
-            rospy.logwarn(f"Invalid depth value at pixel ({x}, {y}): {depth_mm}")
+            logger.warning(f"Invalid depth value at pixel ({x}, {y}): {depth_mm}")
             return None
         
         # Convert depth to meters for deproject function
@@ -330,15 +358,188 @@ def get_3d_point_from_pixel(pixel_coord):
         return np.array(point_3d)
         
     except Exception as e:
-        rospy.logerr(f"Error getting 3D point: {e}")
+        logger.error(f"Error getting 3D point: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
-def mask_viz(
-    model_name: str,
-    image_path: str,
+
+def create_point_marker(point_3d, point_idx, frame_id="camera_color_optical_frame"):
+    """
+    Create a visualization marker for a 3D point.
+    
+    Args:
+        point_3d (np.ndarray): 3D point coordinates [x, y, z]
+        point_idx (int): Index or ID for the marker
+        frame_id (str): The coordinate frame to use
+        
+    Returns:
+        Marker: ROS visualization marker
+    """
+    marker = Marker()
+    marker.header.frame_id = frame_id
+    marker.header.stamp = rospy.Time.now()
+    marker.ns = "sampled_points"
+    marker.id = point_idx
+    marker.type = Marker.SPHERE
+    marker.action = Marker.ADD
+    
+    # Set position
+    marker.pose.position.x = point_3d[0]
+    marker.pose.position.y = point_3d[1]
+    marker.pose.position.z = point_3d[2]
+    
+    # Set orientation (identity quaternion)
+    marker.pose.orientation.x = 0.0
+    marker.pose.orientation.y = 0.0
+    marker.pose.orientation.z = 0.0
+    marker.pose.orientation.w = 1.0
+    
+    # Set scale
+    marker.scale.x = 0.02  # 2cm sphere
+    marker.scale.y = 0.02
+    marker.scale.z = 0.02
+    
+    # Set color (lime green, matching your 2D visualization)
+    marker.color.r = 0.0
+    marker.color.g = 1.0
+    marker.color.b = 0.0
+    marker.color.a = 1.0
+    
+    # Set lifetime (0 = forever)
+    marker.lifetime = rospy.Duration(0)
+    
+    return marker
+
+
+def create_text_marker(point_3d, point_idx, text, frame_id="camera_color_optical_frame"):
+    """
+    Create a text marker to label a 3D point.
+    
+    Args:
+        point_3d (np.ndarray): 3D point coordinates [x, y, z]
+        point_idx (int): Index or ID for the marker
+        text (str): Text to display
+        frame_id (str): The coordinate frame to use
+        
+    Returns:
+        Marker: ROS visualization marker
+    """
+    marker = Marker()
+    marker.header.frame_id = frame_id
+    marker.header.stamp = rospy.Time.now()
+    marker.ns = "point_labels"
+    marker.id = point_idx
+    marker.type = Marker.TEXT_VIEW_FACING
+    marker.action = Marker.ADD
+    
+    # Set position (slightly above the point)
+    marker.pose.position.x = point_3d[0]
+    marker.pose.position.y = point_3d[1]
+    marker.pose.position.z = point_3d[2] + 0.03  # 3cm above the point
+    
+    # Set orientation (identity quaternion)
+    marker.pose.orientation.x = 0.0
+    marker.pose.orientation.y = 0.0
+    marker.pose.orientation.z = 0.0
+    marker.pose.orientation.w = 1.0
+    
+    # Set scale (text height in meters)
+    marker.scale.z = 0.02
+    
+    # Set color (white text)
+    marker.color.r = 1.0
+    marker.color.g = 1.0
+    marker.color.b = 1.0
+    marker.color.a = 1.0
+    
+    # Set text
+    marker.text = text
+    
+    # Set lifetime (0 = forever)
+    marker.lifetime = rospy.Duration(0)
+    
+    return marker
+
+def query_vlm(image_path: Path, prompt: str) -> str:
+
+    client = openai.OpenAI()
+
+    mime, _ = mimetypes.guess_type(image_path)
+    if mime is None:
+        mime = "application/octet-stream"
+    b64 = base64.b64encode(image_path.read_bytes()).decode()
+    image_data_url = f"data:{mime};base64,{b64}"
+
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text",
+                    "text": prompt},
+                    {"type": "image_url",
+                    "image_url": {
+                        "url": image_data_url,
+                        "detail": "high"
+                    }}
+                ]
+            }
+        ],
+        max_tokens=250
+    )
+
+    logger.info(f"VLM response: {response}")
+    return response.choices[0].message.content
+
+
+
+
+MODEL_NAME = "sam"
+SELECTION_PROMPT = """Which point should I grasp to pick up the string? I prefer the point on the body of the string. Only return the point, no other text."""
+
+
+def main(
+    selector: str = "human"
 ):
-    image = Image.open(image_path)
-    masks = get_masks(model_name, image)
+    if selector not in ["human", "vlm"]:
+        raise ValueError(f"Unknown selector: {selector}")
+
+    # Initialize ROS node if not already initialized
+    if not rospy.core.is_initialized():
+        rospy.init_node('sam_visualization', anonymous=True)
+        logger.info("ROS node 'sam_visualization' initialized")
+    
+    # Create publishers - only for the 3D point markers
+    marker_pub = rospy.Publisher('/sam_points', MarkerArray, queue_size=10)
+    logger.info("ROS marker publisher created successfully")
+    
+    # Bridge for converting images
+    bridge = CvBridge()
+    
+    # Open the image
+    image_path = CUR_DIR / "data/images/color_0_1746999582.png"
+    logger.info(f"Loading image from: {image_path}")
+    
+    try:
+        image = Image.open(image_path)
+        logger.info(f"Image loaded successfully: {image.size}x{image.mode}")
+    except Exception as e:
+        logger.error(f"Failed to load image: {e}")
+        return
+    
+    # Generate masks
+    logger.info(f"Generating masks using {MODEL_NAME} model")
+    try:
+        masks = get_masks(MODEL_NAME, image)
+        logger.info(f"Successfully generated {len(masks)} masks")
+    except Exception as e:
+        logger.error(f"Error generating masks: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return
     
     # Generate sampled points for each mask
     sampled_points_per_mask = sample_points_from_masks(masks, points_per_mask=2, seed=42)
@@ -351,7 +552,11 @@ def mask_viz(
     # Convert to numpy array if not empty
     if all_points:
         all_points = np.array(all_points)
+    else:
+        logger.error("No points were sampled from masks!")
+        return
     
+    # Display the image with points for selection, but save to file instead of showing
     plt.figure(figsize=(20, 20))
     plt.imshow(image)
     
@@ -380,17 +585,109 @@ def mask_viz(
                        bbox=dict(facecolor='black', alpha=0.7, pad=2, edgecolor='none'))
     
     plt.axis('off')
-    plt.show()
+    
+    # Save the visualization to a file
+    visualization_path = CUR_DIR / "visualization.png"
+    plt.savefig(visualization_path)
+    plt.close()  # Close the figure to free memory
+    
+    # Print points information for selection
+    print("\nAvailable points:")
+    for i, (x, y) in enumerate(all_points):
+        print(f"Point {i}: ({x}, {y})")
+    
+    print(f"\nVisualization saved to: {visualization_path}")
+    print("Please open this image to see all points with labels.")
+    
+    if selector == "human":
+        # Get user selection
+        chosen_point_idx = int(input("\nEnter the index of the point you want to choose: "))
+        chosen_point = all_points[chosen_point_idx]
+    elif selector == "vlm":
+        # Use VLM to select a point
+        chosen_point_response = query_vlm(
+            image_path=visualization_path,
+            prompt=SELECTION_PROMPT,
+        )
+        print(f"\nVLM response: {chosen_point_response}")
+        chosen_point_idx = int(chosen_point_response[1:])
+        chosen_point = all_points[chosen_point_idx]
 
-    chosen_point_idx = int(input("Enter the index of the point you want to choose: "))
-    chosen_point = all_points[chosen_point_idx]
 
     print(f"Chosen point: {chosen_point}")
+    
+    # Get depth image for 3D conversion and point cloud creation
+    print("Waiting for depth image...")
+    depth_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/image_raw', ROSSensorImage, timeout=2.0)
+    camera_info_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/camera_info', CameraInfo, timeout=2.0)
+    
+    # Convert ROS Image message to numpy array
+    depth_image = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+    
+    # Get 3D point
+    logger.info(f"Getting 3D point for pixel: {chosen_point}")
     p3d = get_3d_point_from_pixel(chosen_point)
-    print(f"3D point: {p3d}")
-
+    if p3d is None:
+        logger.error("Could not get 3D point. Check depth data.")
+        return
+    
+    logger.info(f"3D point: {p3d}")
+    
+    # Create markers for the chosen point
+    logger.info("Creating visualization markers")
+    marker_array = MarkerArray()
+    
+    # Add sphere marker for the point
+    point_marker = create_point_marker(p3d, 0)
+    marker_array.markers.append(point_marker)
+    
+    # Add text label for the point
+    text_marker = create_text_marker(p3d, 1, f"Point {chosen_point_idx}")
+    marker_array.markers.append(text_marker)
+    
+    # Publish visualization data at a reasonable rate
+    rate = rospy.Rate(10)  # 10 Hz
+    
+    logger.info("Publishing 3D point markers to RViz. Press Ctrl+C to stop.")
+    logger.info("Make sure to set your fixed frame to 'camera_color_optical_frame' in RViz.")
+    logger.info("Add a MarkerArray display in RViz with topic '/sam_points'")
+    
+    try:
+        while not rospy.is_shutdown():
+            # Update timestamps
+            now = rospy.Time.now()
+            for m in marker_array.markers:
+                m.header.stamp = now
+            
+            # Publish point marker
+            marker_pub.publish(marker_array)
+            
+            rate.sleep()
+    except KeyboardInterrupt:
+        logger.info("Stopped publishing visualization data")
+    
+    print("Publishing visualization markers to RViz. Press Ctrl+C to stop.")
+    print("Make sure to set your fixed frame to 'camera_color_optical_frame' in RViz.")
+    print("Add the following displays in RViz:")
+    print("  1. MarkerArray with topic '/sam_points'")
+    print("  2. PointCloud2 with topic '/sam_masks'")
+    print("  3. Image with topic '/sam_image'")
+    
+    try:
+        while not rospy.is_shutdown():
+            # Update timestamps
+            now = rospy.Time.now()
+            for m in marker_array.markers:
+                m.header.stamp = now
+            
+            # Publish point marker
+            marker_pub.publish(marker_array)
+            
+            rate.sleep()
+    except KeyboardInterrupt:
+        logger.info("Stopped publishing visualization data")
 
 
 if __name__ == '__main__':
     import fire
-    fire.Fire(mask_viz)
+    fire.Fire(main)
