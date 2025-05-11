@@ -77,3 +77,73 @@ def sample_points_from_masks(masks, points_per_mask=5, seed=None):
         all_sampled_points.append(sampled_points)
         
     return all_sampled_points
+
+def centroids_of_main_objects(
+        masks,
+        image_shape,                # (H, W)
+        k=2,
+        min_area_frac=0.01,
+        border_margin=0             # set >0 if you want a buffer inside the edge
+    ):
+    """
+    Pick the k masks that best satisfy ‘fully in view & centred’, then
+    return their centroids.
+
+    Returns
+    -------
+    list[dict]  each dict  { "centroid": (cx, cy),   # float
+                             "area": int,
+                             "distance": float,
+                             "mask": <bool ndarray> }
+    Raises
+    ------
+    ValueError  if fewer than k suitable objects are found
+    """
+    H, W = image_shape
+    cx_img, cy_img = W / 2, H / 2
+
+    def touches_border(bbox):
+        x0, y0, w, h = bbox          # SAM’s bbox = (x, y, width, height)
+        x1, y1 = x0 + w - 1, y0 + h - 1
+        return (x0 <= border_margin or y0 <= border_margin or
+                x1 >= W - 1 - border_margin or
+                y1 >= H - 1 - border_margin)
+
+    candidates = []
+    for m in masks:
+        area = m["area"] if "area" in m else m["segmentation"].sum()
+        if area < min_area_frac * H * W:
+            continue                             # too small
+
+        bbox = m["bbox"] if "bbox" in m else None
+        if bbox is None:
+            # compute bbox quickly from the mask if SAM did not include one
+            ys, xs = np.where(m["segmentation"])
+            bbox = (xs.min(), ys.min(), xs.max() - xs.min() + 1, ys.max() - ys.min() + 1)
+
+        if touches_border(bbox):
+            continue                             # cropped at the edge
+
+        # centroid
+        ys, xs = np.where(m["segmentation"])
+        centroid_x, centroid_y = xs.mean(), ys.mean()
+
+        # distance to image centre
+        dist = np.hypot(centroid_x - cx_img, centroid_y - cy_img)
+
+        candidates.append((dist, -area, centroid_x, centroid_y, m))
+
+    if len(candidates) < k:
+        raise ValueError(f"Only {len(candidates)} suitable object(s) found; need {k}")
+
+    # sort: closest to centre first, larger area ties broken via -area
+    candidates.sort()
+    picked = candidates[:k]
+
+    return [
+        {"centroid": (cx, cy),
+         "area": -neg_area,
+         "distance": dist,
+         "mask": mask}
+        for dist, neg_area, cx, cy, mask in picked
+    ]
