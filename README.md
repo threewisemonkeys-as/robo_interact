@@ -1,11 +1,15 @@
 # Robot Interact
 
+Launch arm
 
-
-### Segmentation mask example
-
-Download sam vit h checkpoint to `3p/sam_ckpts`
 
 ```
-python mask_viz.py sam data/images/color_0_1746820040.png
+roslaunch interbotix_xsarm_control xsarm_control.launch robot_model:=wx250s
+```
+
+Launch camera and transform -
+
+
+```
+roslaunch interbotix_xsarm_perception xsarm_perception.launch robot_model:=wx250s use_pointcloud_tuner_gui:=true use_armtag_tuner_gui:=true
 ```

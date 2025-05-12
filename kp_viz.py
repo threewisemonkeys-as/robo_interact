@@ -4,9 +4,6 @@ import random
 from pathlib import Path
 import base64
 import mimetypes
-from joblib import Memory
-
-memory = Memory('.cache', verbose=0)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -26,11 +23,6 @@ import rospy
 from sensor_msgs.msg import Image as ROSSensorImage 
 from sensor_msgs.msg import CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
-import tf2_geometry_msgs
-import tf2_ros
-import geometry_msgs.msg
-
-from interbotix_xs_modules.arm import InterbotixManipulatorXS
 
 
 CUR_DIR = Path(__file__).resolve().parent
@@ -62,7 +54,7 @@ logger.propagate = True
 logger.info("Logging system initialized")
 
 
-def show_anns(anns, borders=True, show_boxes=True, show_points=True, show_masks=True, sampled_points=None,
+def show_anns(anns, borders=True, show_boxes=True, show_points=True, sampled_points=None,
 sampled_point_marker='o', 
               sampled_point_size=30, sampled_point_color='green'):
     """
@@ -73,7 +65,6 @@ sampled_point_marker='o',
         borders (bool): Whether to show mask borders
         show_boxes (bool): Whether to show bounding boxes
         show_points (bool): Whether to show original points
-        show_masks (bool): Whether to color and display the masks
         sampled_points (list | None): Sampled points
         sampled_point_marker (str): Marker style for sampled points
         sampled_point_size (int): Size of sampled points
@@ -92,37 +83,26 @@ sampled_point_marker='o',
     img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
     img[:, :, 3] = 0
     
-    if show_masks:
-        logger.info(f"Processing {len(sorted_anns)} masks for visualization")
-        mask_start = time.time()
-        for i, ann in enumerate(sorted_anns):
-            if i % 50 == 0 and i > 0:  # Log progress every 50 masks
-                logger.info(f"Processed {i}/{len(sorted_anns)} masks")
-            
-            m = ann['segmentation']
-            color_mask = np.concatenate([np.random.random(3), [0.5]])
-            img[m] = color_mask
-            
-            # Draw bounding box
-            if show_boxes and 'bbox' in ann:
-                x, y, w, h = ann['bbox']
-                rect = plt.Rectangle((x, y), w, h, linewidth=1.5, 
-                                    edgecolor=color_mask[:3], facecolor='none')
-                ax.add_patch(rect)
+    logger.info(f"Processing {len(sorted_anns)} masks for visualization")
+    mask_start = time.time()
+    for i, ann in enumerate(sorted_anns):
+        if i % 50 == 0 and i > 0:  # Log progress every 50 masks
+            logger.info(f"Processed {i}/{len(sorted_anns)} masks")
         
-        logger.info(f"Mask coloring completed in {time.time() - mask_start:.2f} seconds")
-    elif show_boxes:
-        # If we're not showing masks but want to show boxes, we still need to draw them
-        logger.info("Drawing bounding boxes without masks")
-        for i, ann in enumerate(sorted_anns):
-            if 'bbox' in ann:
-                x, y, w, h = ann['bbox']
-                # Use a default color since we don't have mask colors
-                rect = plt.Rectangle((x, y), w, h, linewidth=1.5, 
-                                    edgecolor='blue', facecolor='none')
-                ax.add_patch(rect)
+        m = ann['segmentation']
+        color_mask = np.concatenate([np.random.random(3), [0.5]])
+        img[m] = color_mask
+        
+        # Draw bounding box
+        if show_boxes and 'bbox' in ann:
+            x, y, w, h = ann['bbox']
+            rect = plt.Rectangle((x, y), w, h, linewidth=1.5, 
+                                 edgecolor=color_mask[:3], facecolor='none')
+            ax.add_patch(rect)
     
-    if borders and show_masks:  # Only show borders if masks are enabled
+    logger.info(f"Mask coloring completed in {time.time() - mask_start:.2f} seconds")
+    
+    if borders:
         logger.info("Adding contour borders to visualization")
         border_start = time.time()
         import cv2
@@ -148,29 +128,21 @@ sampled_point_marker='o',
                 if isinstance(points, list) and len(points) > 0:
                     # Convert list to numpy array if needed
                     points = np.array(points)
-                    # Use mask color for points if masks are shown, otherwise use a default color
-                    if show_masks:
-                        x, y = int(points[0][0]), int(points[0][1])
-                        if 0 <= y < img.shape[0] and 0 <= x < img.shape[1]:
-                            point_color = img[y, x, :3]
-                        else:
-                            point_color = np.concatenate([np.random.random(3), [0.5]])[:3]  # Fallback color
+                    # Use mask color for points
+                    x, y = int(points[0][0]), int(points[0][1])
+                    if 0 <= y < img.shape[0] and 0 <= x < img.shape[1]:
+                        point_color = img[y, x, :3]
                     else:
-                        point_color = 'red'  # Default color when masks are not shown
-                        
+                        point_color = color_mask[:3]  # Fallback color
                     ax.scatter(points[:, 0], points[:, 1], color=point_color,
                               s=20, marker='*', edgecolors='white')
                 elif hasattr(points, 'size') and points.size > 0:
                     # Already a numpy array with points
-                    if show_masks:
-                        x, y = int(points[0][0]), int(points[0][1])
-                        if 0 <= y < img.shape[0] and 0 <= x < img.shape[1]:
-                            point_color = img[y, x, :3]
-                        else:
-                            point_color = np.concatenate([np.random.random(3), [0.5]])[:3]  # Fallback color
+                    x, y = int(points[0][0]), int(points[0][1])
+                    if 0 <= y < img.shape[0] and 0 <= x < img.shape[1]:
+                        point_color = img[y, x, :3]
                     else:
-                        point_color = 'red'  # Default color when masks are not shown
-                        
+                        point_color = color_mask[:3]  # Fallback color
                     ax.scatter(points[:, 0], points[:, 1], color=point_color,
                               s=20, marker='*', edgecolors='white')
         logger.info(f"Original point visualization completed in {time.time() - points_start:.2f} seconds")
@@ -206,7 +178,6 @@ sampled_point_marker='o',
     logger.info(f"Visualization completed in {time.time() - start_time:.2f} seconds")
 
 
-@memory.cache
 def get_masks(
     model_name: str,
     image: Image,
@@ -281,8 +252,8 @@ def get_sam_mask_generator(
     if name == "sam":
         from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
-        sam_checkpoint: str = CUR_DIR / "3p/sam_ckpts/sam_vit_b_01ec64.pth"
-        model_type: str = "vit_b"
+        sam_checkpoint: str = CUR_DIR / "3p/sam_ckpts/sam_vit_h_4b8939.pth"
+        model_type: str = "vit_h"
 
         # Initialize the SAM model using the registry
         sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -322,7 +293,7 @@ def get_sam_mask_generator(
     return mask_generator
 
 
-def get_3d_point_from_pixel(pixel_coord, depth_image = None):
+def get_3d_point_from_pixel(pixel_coord):
     """
     Convert a 2D pixel coordinate to a 3D point using the RealSense depth camera.
     
@@ -342,16 +313,15 @@ def get_3d_point_from_pixel(pixel_coord, depth_image = None):
         logger.info("ROS node initialized")
     
     try:
-        if depth_image is None:
-            # Get depth image
-            logger.info(f"Waiting for depth image on topic '/camera/aligned_depth_to_color/image_raw'")
-            depth_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/image_raw', ROSSensorImage, timeout=2.0)
-            logger.info(f"Received depth image")
-            
-            # Convert ROS Image message to numpy array
-            from cv_bridge import CvBridge
-            bridge = CvBridge()
-            depth_image = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+        # Get depth image
+        logger.info(f"Waiting for depth image on topic '/camera/aligned_depth_to_color/image_raw'")
+        depth_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/image_raw', ROSSensorImage, timeout=2.0)
+        logger.info(f"Received depth image")
+        
+        # Convert ROS Image message to numpy array
+        from cv_bridge import CvBridge
+        bridge = CvBridge()
+        depth_image = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
         
         # Get camera intrinsics
         logger.info(f"Waiting for camera info on topic '/camera/aligned_depth_to_color/camera_info'")
@@ -524,202 +494,11 @@ def query_vlm(image_path: Path, prompt: str) -> str:
     logger.info(f"VLM response: {response}")
     return response.choices[0].message.content
 
-def pick_up_from_point(bot, p3d, camera_frame="camera_color_optical_frame", robot_frame="wx250s/base_link"):
-    """
-    Move the robot arm to a 3D point and pick up an object.
-    
-    Args:
-        bot: InterbotixManipulatorXS object
-        p3d: 3D point in camera frame [x, y, z]
-        camera_frame: The frame ID of the camera
-        robot_frame: The frame ID of the robot base
-    """
-    logger.info(f"Moving to point {p3d} in {camera_frame} frame")
-    
-    # Transform point from camera frame to robot base frame
-    try:        
-        # Create a TF buffer and listener
-        tf_buffer = tf2_ros.Buffer()
-        tf_listener = tf2_ros.TransformListener(tf_buffer)
-        
-        # Wait for the transform to be available
-        logger.info(f"Waiting for transform from {camera_frame} to {robot_frame}")
-        rospy.sleep(1.0)  # Give time for the TF system to initialize
-        
-        # Create a PointStamped message for the camera point
-        point_stamped = geometry_msgs.msg.PointStamped()
-        point_stamped.header.frame_id = camera_frame
-        point_stamped.header.stamp = rospy.Time(0)
-        point_stamped.point.x = p3d[0]
-        point_stamped.point.y = p3d[1]
-        point_stamped.point.z = p3d[2]
-        
-        # Transform the point to the robot base frame
-        transformed_point = tf_buffer.transform(point_stamped, robot_frame)
-        
-        # Extract the transformed coordinates
-        x = transformed_point.point.x
-        y = transformed_point.point.y
-        z = transformed_point.point.z
-        
-        logger.info(f"Transformed point: ({x}, {y}, {z}) in {robot_frame} frame")
-        
-    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-        logger.error(f"Transform error: {e}")
-        return
-    
-    try:
-        
-        # First move to a position slightly above the target
-        approach_z_offset = 0.1  # Increased for more clearance when approaching vertically
-        logger.info(f"Moving to approach position: ({x}, {y}, {z + approach_z_offset})")
-        
-        # Set end-effector pose with downward-pointing orientation
-        # Roll = 0, Pitch = 1.5708 (90 degrees), Yaw = 0
-        # This makes the gripper point downward (along negative Z-axis)
-        bot.arm.set_ee_pose_components(
-            x=x, y=y, z=z + approach_z_offset,
-            roll=0, pitch=1.5708, yaw=0
-        )
-        rospy.sleep(2.0)  # Give time for the move to complete
-        
-        # Move down to the target position
-        logger.info(f"Moving to grasp position: ({x}, {y}, {z+0.05})")
-        bot.arm.set_ee_cartesian_trajectory(z=-approach_z_offset)  # Move down relative to current position
-        rospy.sleep(1.5)
-        
-        # Close the gripper to grasp the object
-        logger.info("Closing gripper")
-        bot.gripper.close()
-        rospy.sleep(1.0)
-        
-        # Lift the object
-        logger.info("Lifting object")
-        bot.arm.set_ee_cartesian_trajectory(z=approach_z_offset*2)  # Move up relative to current position
-        rospy.sleep(1.5)
-        
-        logger.info("Object picked up successfully")
-        
-    except Exception as e:
-        logger.error(f"Error during arm movement: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        # Try to recover by going to home position
-        bot.arm.go_to_home_pose()
 
 
-
-def move_to_point(bot, p3d, camera_frame="camera_color_optical_frame", robot_frame="wx250s/base_link"):
-    """
-    Move the robot arm to a 3D point
-    
-    Args:
-        bot: InterbotixManipulatorXS object
-        p3d: 3D point in camera frame [x, y, z]
-        camera_frame: The frame ID of the camera
-        robot_frame: The frame ID of the robot base
-    """
-    logger.info(f"Moving to point {p3d} in {camera_frame} frame")
-    
-    # Transform point from camera frame to robot base frame
-    try:        
-        # Create a TF buffer and listener
-        tf_buffer = tf2_ros.Buffer()
-        tf_listener = tf2_ros.TransformListener(tf_buffer)
-        
-        # Wait for the transform to be available
-        logger.info(f"Waiting for transform from {camera_frame} to {robot_frame}")
-        rospy.sleep(1.0)  # Give time for the TF system to initialize
-        
-        # Create a PointStamped message for the camera point
-        point_stamped = geometry_msgs.msg.PointStamped()
-        point_stamped.header.frame_id = camera_frame
-        point_stamped.header.stamp = rospy.Time(0)
-        point_stamped.point.x = p3d[0]
-        point_stamped.point.y = p3d[1]
-        point_stamped.point.z = p3d[2]
-        
-        # Transform the point to the robot base frame
-        transformed_point = tf_buffer.transform(point_stamped, robot_frame)
-        
-        # Extract the transformed coordinates
-        x = transformed_point.point.x
-        y = transformed_point.point.y
-        z = transformed_point.point.z
-        
-        logger.info(f"Transformed point: ({x}, {y}, {z}) in {robot_frame} frame")
-        
-    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-        logger.error(f"Transform error: {e}")
-        return
-    
-    try:
-        
-        logger.info(f"Moving to position: ({x}, {y}, {z})")
-        bot.arm.set_ee_pose_components(
-            x=x, y=y, z=z + 0.01,
-        )
-        rospy.sleep(2.0)  # Give time for the move to complete
-
-        
-    except Exception as e:
-        logger.error(f"Error during arm movement: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        # Try to recover by going to home position
-        bot.arm.go_to_home_pose()
-
-
-
-
-def capture_live_image(bridge=None):
-    """
-    Capture a live image from the RealSense camera.
-    
-    Args:
-        bridge (CvBridge, optional): Bridge for converting ROS images
-        
-    Returns:
-        PIL.Image: Captured image from the camera
-    """
-    if bridge is None:
-        bridge = CvBridge()
-    
-    logger.info("Waiting for color image from camera...")
-    try:
-        # Wait for a color image from the RealSense camera
-        color_msg = rospy.wait_for_message('/camera/color/image_raw', ROSSensorImage, timeout=5.0)
-        logger.info("Color image received successfully")
-        
-        # Convert ROS image to OpenCV format
-        cv_image = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
-        
-        # Convert OpenCV image to PIL Image
-        pil_image = Image.fromarray(cv_image)
-        
-        return pil_image
-    except Exception as e:
-        logger.error(f"Failed to capture live image: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
-
-
-
-### DSL ###
-
-
-
-
-
-
-### Config ###
 
 MODEL_NAME = "sam"
-SELECTION_PROMPT = """Which point should I grasp to pick up the green alien object? I prefer the point on the body of the object. Only return the point, no other text."""
-IMAGES_DIR = CUR_DIR / "images"
-SELECTION_PROMPT2 = """Which point is on my hand? Only return the point, no other text"""
-
+SELECTION_PROMPT = """Which point should I grasp to pick up the string? I prefer the point on the body of the string. Only return the point, no other text."""
 
 
 def main(
@@ -727,39 +506,30 @@ def main(
 ):
     if selector not in ["human", "vlm"]:
         raise ValueError(f"Unknown selector: {selector}")
-    
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Initialize ROS node if not already initialized
     if not rospy.core.is_initialized():
-        rospy.init_node('steepmind', anonymous=True)
-        logger.info("ROS node 'steepmind' initialized")
+        rospy.init_node('sam_visualization', anonymous=True)
+        logger.info("ROS node 'sam_visualization' initialized")
+    
+    # Create publishers - only for the 3D point markers
+    marker_pub = rospy.Publisher('/sam_points', MarkerArray, queue_size=10)
+    logger.info("ROS marker publisher created successfully")
     
     # Bridge for converting images
     bridge = CvBridge()
     
-    # Capture live image instead of loading saved image
-    logger.info("Capturing live image from RealSense camera")
-    image = capture_live_image(bridge)
-
-    # Get depth image for 3D conversion and point cloud creation
-    print("Waiting for depth image...")
-    depth_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/image_raw', ROSSensorImage, timeout=2.0)
-    camera_info_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/camera_info', CameraInfo, timeout=2.0)
+    # Open the image
+    image_path = CUR_DIR / "data/images/color_0_1746999582.png"
+    logger.info(f"Loading image from: {image_path}")
     
-    # Convert ROS Image message to numpy array
-    depth_image = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
-    
-    if image is None:
-        logger.error("Failed to capture image from camera")
+    try:
+        image = Image.open(image_path)
+        logger.info(f"Image loaded successfully: {image.size}x{image.mode}")
+    except Exception as e:
+        logger.error(f"Failed to load image: {e}")
         return
     
-    logger.info(f"Image captured successfully: {image.size}x{image.mode}")
-
-    save_path = IMAGES_DIR / "captured_image.png"
-    image.save(save_path)
-    logger.info(f"Captured image saved to: {save_path}")
-
     # Generate masks
     logger.info(f"Generating masks using {MODEL_NAME} model")
     try:
@@ -796,7 +566,6 @@ def main(
         borders=False,
         show_boxes=False,
         show_points=False,
-        show_masks=False,
         sampled_points=all_points,
         sampled_point_marker='o',
         sampled_point_size=50,
@@ -818,7 +587,7 @@ def main(
     plt.axis('off')
     
     # Save the visualization to a file
-    visualization_path = IMAGES_DIR / "visualization.png"
+    visualization_path = CUR_DIR / "visualization.png"
     plt.savefig(visualization_path)
     plt.close()  # Close the figure to free memory
     
@@ -847,36 +616,6 @@ def main(
 
     print(f"Chosen point: {chosen_point}")
     
-    # Get 3D point
-    logger.info(f"Getting 3D point for pixel: {chosen_point}")
-    p3d = get_3d_point_from_pixel(chosen_point, depth_image)
-    if p3d is None:
-        logger.error("Could not get 3D point. Check depth data.")
-        return
-    
-    logger.info(f"3D point: {p3d}")
-    
-    bot = InterbotixManipulatorXS("wx250s", "arm", "gripper", init_node=False)
-
-    # Start with the arm in its home position
-    logger.info("Moving arm to home position")
-    bot.arm.go_to_home_pose()
-    rospy.sleep(1.0)
-    
-    # Open the gripper before approaching
-    logger.info("Opening gripper")
-    bot.gripper.open()
-    rospy.sleep(0.5)
-    pick_up_from_point(bot, p3d)
-
-
-    print("STAGE 2")
-    rospy.sleep(2.0)
-
-    # Capture live image instead of loading saved image
-    logger.info("Capturing live image from RealSense camera")
-    image = capture_live_image(bridge)
-
     # Get depth image for 3D conversion and point cloud creation
     print("Waiting for depth image...")
     depth_msg = rospy.wait_for_message('/camera/aligned_depth_to_color/image_raw', ROSSensorImage, timeout=2.0)
@@ -885,125 +624,68 @@ def main(
     # Convert ROS Image message to numpy array
     depth_image = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
     
-    if image is None:
-        logger.error("Failed to capture image from camera")
-        return
-    
-    logger.info(f"Image captured successfully: {image.size}x{image.mode}")
-
-    save_path = IMAGES_DIR / "captured_image2.png"
-    image.save(save_path)
-    logger.info(f"Captured image saved to: {save_path}")
-
-    # Generate masks
-    logger.info(f"Generating masks using {MODEL_NAME} model")
-    try:
-        masks = get_masks(MODEL_NAME, image)
-        logger.info(f"Successfully generated {len(masks)} masks")
-    except Exception as e:
-        logger.error(f"Error generating masks: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return
-    
-    # Generate sampled points for each mask
-    sampled_points_per_mask = sample_points_from_masks(masks, points_per_mask=2, seed=42)
-    
-    # Flatten all points into a single list
-    all_points = []
-    for points in sampled_points_per_mask:
-        all_points.extend(points)
-    
-    # Convert to numpy array if not empty
-    if all_points:
-        all_points = np.array(all_points)
-    else:
-        logger.error("No points were sampled from masks!")
-        return
-    
-    # Display the image with points for selection, but save to file instead of showing
-    plt.figure(figsize=(20, 20))
-    plt.imshow(image)
-    
-    # Show the annotations first
-    show_anns(
-        masks,
-        borders=False,
-        show_boxes=False,
-        show_points=False,
-        show_masks=False,
-        sampled_points=all_points,
-        sampled_point_marker='o',
-        sampled_point_size=50,
-        sampled_point_color='lime'
-    )
-    
-    # Add labels to each keypoint
-    if len(all_points) > 0:
-        ax = plt.gca()
-        for i, (x, y) in enumerate(all_points):
-            # Add text label with small offset from the point
-            ax.annotate(f"p{i}", 
-                       (x+5, y+5),  # Offset position
-                       color='white',
-                       fontsize=12,
-                       fontweight='bold',
-                       bbox=dict(facecolor='black', alpha=0.7, pad=2, edgecolor='none'))
-    
-    plt.axis('off')
-    
-    # Save the visualization to a file
-    visualization_path = IMAGES_DIR / "visualization2.png"
-    plt.savefig(visualization_path)
-    plt.close()  # Close the figure to free memory
-    
-    # Print points information for selection
-    print("\nAvailable points:")
-    for i, (x, y) in enumerate(all_points):
-        print(f"Point {i}: ({x}, {y})")
-    
-    print(f"\nVisualization saved to: {visualization_path}")
-    print("Please open this image to see all points with labels.")
-    
-    if selector == "human":
-        # Get user selection
-        chosen_point_idx = int(input("\nEnter the index of the point you want to choose: "))
-        chosen_point = all_points[chosen_point_idx]
-    elif selector == "vlm":
-        # Use VLM to select a point
-        chosen_point_response = query_vlm(
-            image_path=visualization_path,
-            prompt=SELECTION_PROMPT2,
-        )
-        print(f"\nVLM response: {chosen_point_response}")
-        chosen_point_idx = int(chosen_point_response[1:])
-        chosen_point = all_points[chosen_point_idx]
-
-
-    print(f"Chosen point: {chosen_point}")
-    
-
     # Get 3D point
     logger.info(f"Getting 3D point for pixel: {chosen_point}")
-    p3d = get_3d_point_from_pixel(chosen_point, depth_image)
+    p3d = get_3d_point_from_pixel(chosen_point)
     if p3d is None:
         logger.error("Could not get 3D point. Check depth data.")
         return
     
     logger.info(f"3D point: {p3d}")
     
-    bot = InterbotixManipulatorXS("wx250s", "arm", "gripper", init_node=False)
-    move_to_point(bot, p3d)
-
-    # Open gripper
-    logger.info("Opening gripper")
-    bot.gripper.open()
-    rospy.sleep(1.0)
-
-
-    bot.arm.go_to_home_pose()
-    rospy.sleep(1.0)
-
+    # Create markers for the chosen point
+    logger.info("Creating visualization markers")
+    marker_array = MarkerArray()
+    
+    # Add sphere marker for the point
+    point_marker = create_point_marker(p3d, 0)
+    marker_array.markers.append(point_marker)
+    
+    # Add text label for the point
+    text_marker = create_text_marker(p3d, 1, f"Point {chosen_point_idx}")
+    marker_array.markers.append(text_marker)
+    
+    # Publish visualization data at a reasonable rate
+    rate = rospy.Rate(10)  # 10 Hz
+    
+    logger.info("Publishing 3D point markers to RViz. Press Ctrl+C to stop.")
+    logger.info("Make sure to set your fixed frame to 'camera_color_optical_frame' in RViz.")
+    logger.info("Add a MarkerArray display in RViz with topic '/sam_points'")
+    
+    try:
+        while not rospy.is_shutdown():
+            # Update timestamps
+            now = rospy.Time.now()
+            for m in marker_array.markers:
+                m.header.stamp = now
+            
+            # Publish point marker
+            marker_pub.publish(marker_array)
+            
+            rate.sleep()
+    except KeyboardInterrupt:
+        logger.info("Stopped publishing visualization data")
+    
+    print("Publishing visualization markers to RViz. Press Ctrl+C to stop.")
+    print("Make sure to set your fixed frame to 'camera_color_optical_frame' in RViz.")
+    print("Add the following displays in RViz:")
+    print("  1. MarkerArray with topic '/sam_points'")
+    print("  2. PointCloud2 with topic '/sam_masks'")
+    print("  3. Image with topic '/sam_image'")
+    
+    try:
+        while not rospy.is_shutdown():
+            # Update timestamps
+            now = rospy.Time.now()
+            for m in marker_array.markers:
+                m.header.stamp = now
+            
+            # Publish point marker
+            marker_pub.publish(marker_array)
+            
+            rate.sleep()
+    except KeyboardInterrupt:
+        logger.info("Stopped publishing visualization data")
 
 
 if __name__ == '__main__':
