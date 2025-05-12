@@ -8,7 +8,7 @@ import io
 import numpy as np
 
 # Your ngrok URL
-SERVER_URL = "https://9970-128-84-100-13.ngrok-free.app"
+SERVER_URL = "https://a7db-128-84-100-13.ngrok-free.app"
 
 def encode_image_to_base64(image):
     """Convert PIL.Image object to base64 string"""
