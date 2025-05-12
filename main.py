@@ -33,7 +33,7 @@ import geometry_msgs.msg
 
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 
-from call_sam import generate_mask_remote
+from cs2 import SAMClient
 
 
 CUR_DIR = Path(__file__).resolve().parent
@@ -246,7 +246,8 @@ def get_masks(
 
     if model_name == "sam_remote":
         logger.info("Using remote SAM model")
-        masks = generate_mask_remote(image)
+        sam_client = SAMClient()
+        masks = sam_client.get_masks_from_pil_image(image)
     else:
         sam_mask_generator = get_sam_mask_generator(model_name)
         masks = sam_mask_generator.generate(np.array(image.convert("RGB")))
