@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SAMClient:
-    def __init__(self, server_url='http://localhost:5000'):
+    def __init__(self, server_url=' https://2cc9-128-84-100-13.ngrok-free.app'):
         self.server_url = server_url
         
     def check_server_health(self):
@@ -148,7 +148,7 @@ class SAMClient:
 # Example usage
 if __name__ == "__main__":
     # Initialize client
-    client = SAMClient("http://localhost:5000")
+    client = SAMClient(" https://2cc9-128-84-100-13.ngrok-free.app")
     
     # Example 1: Using file path
     image_path = "path/to/your/image.jpg"
