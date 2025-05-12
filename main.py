@@ -33,12 +33,14 @@ import geometry_msgs.msg
 
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 
+from call_sam import generate_mask_remote
+
 
 CUR_DIR = Path(__file__).resolve().parent
 
 # Global configuration flags
-USE_VLM = False  # Set to False to use human selection instead
-MODEL_NAME = "sam"
+USE_VLM = True  # Set to False to use human selection instead
+MODEL_NAME = "sam_remote"
 IMAGES_DIR = CUR_DIR / "logs"
 
 # Define custom exception hierarchy
@@ -238,15 +240,18 @@ def get_masks(
     model_name: str,
     image: Image,
 ):
-    image = np.array(image.convert("RGB"))
 
-    sam_mask_generator = get_sam_mask_generator(model_name)
-    
     logger.info("Generating masks - this may take some time")
     mask_start = time.time()
-    masks = sam_mask_generator.generate(image)
+
+    if model_name == "sam_remote":
+        logger.info("Using remote SAM model")
+        masks = generate_mask_remote(image)
+    else:
+        sam_mask_generator = get_sam_mask_generator(model_name)
+        masks = sam_mask_generator.generate(np.array(image.convert("RGB")))
+
     logger.info(f"Generated {len(masks)} masks in {time.time() - mask_start:.2f} seconds")
-    
     return masks
 
 

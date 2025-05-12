@@ -10,10 +10,14 @@ import numpy as np
 # Your ngrok URL
 SERVER_URL = "https://9970-128-84-100-13.ngrok-free.app"
 
-def encode_image_to_base64(image_path):
-    """Convert image file to base64 string"""
-    with open(image_path, "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read()).decode()
+def encode_image_to_base64(image):
+    """Convert PIL.Image object to base64 string"""
+    
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    img_bytes = buffer.getvalue()
+    
+    encoded_string = base64.b64encode(img_bytes).decode()
     return encoded_string
 
 def decode_base64_to_image(base64_string):
@@ -22,7 +26,7 @@ def decode_base64_to_image(base64_string):
     image = Image.open(io.BytesIO(image_data))
     return image
 
-def generate_mask(image_path, SERVER_URL=SERVER_URL):
+def generate_mask_remote(image: Image, SERVER_URL=SERVER_URL):
     """
     Generate automatic segmentation masks for entire image
     
@@ -30,7 +34,7 @@ def generate_mask(image_path, SERVER_URL=SERVER_URL):
         image_path: Path to image file
     """
     # Encode image to base64
-    image_b64 = encode_image_to_base64(image_path)
+    image_b64 = encode_image_to_base64(image)
 
     data = {
         "image": image_b64,
@@ -41,6 +45,7 @@ def generate_mask(image_path, SERVER_URL=SERVER_URL):
     
     if response.status_code == 200:
         result = response.json()
+        breakpoint()
         
         # Extract mask information
         masks_data = []
@@ -62,12 +67,7 @@ def generate_mask(image_path, SERVER_URL=SERVER_URL):
             masks_data.append(mask_data)
         
         # Return both the masks and metadata
-        return {
-            'masks': masks_data,
-            'num_masks': result['num_masks'],
-            'image_scale': result['image_scale'],
-            'message': result['message']
-        }
+        return masks_data
     else:
         print(f"Error: {response.status_code} - {response.text}")
         return None
@@ -166,7 +166,7 @@ if __name__ == "__main__":
     
     print("\nExample 1: Generating automatic masks...")
     result = generate_mask(
-        image_path="/Users/daiyijia/robo_interact/data/images/color_0_1747009769.png",
+        image_path="/home/group6/project/robo_interact/logs/rgb_20250512_191637.png",
     )
     
     if result:
@@ -176,7 +176,7 @@ if __name__ == "__main__":
         
         # Visualize all masks
         combined_file = visualize_masks(
-            "/Users/daiyijia/robo_interact/visualization.png",
+            "/home/group6/project/robo_interact/logs/rgb_20250512_191637.png",
             result['masks'],
             "segmentation_mask"
         )
