@@ -10,8 +10,6 @@ def main():
     bot.gripper.open()
     bot.arm.go_to_home_pose()
     bot.gripper.close()
-    loaded_currents = bot.arm.get_joint_current_states()
-    print(loaded_currents)
     bot.arm.go_to_sleep_pose()
 
 

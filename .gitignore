@@ -176,3 +176,6 @@ cython_debug/
 
 # 3rd party
 3p/
+
+# logs
+logs/

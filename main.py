@@ -37,9 +37,9 @@ from interbotix_xs_modules.arm import InterbotixManipulatorXS
 CUR_DIR = Path(__file__).resolve().parent
 
 # Global configuration flags
-USE_VLM = True  # Set to False to use human selection instead
+USE_VLM = False  # Set to False to use human selection instead
 MODEL_NAME = "sam"
-IMAGES_DIR = CUR_DIR / "images"
+IMAGES_DIR = CUR_DIR / "logs"
 
 # Define custom exception hierarchy
 class RoboMindException(Exception):
@@ -745,7 +745,7 @@ def select_keypoint(image, masks, points, prompt):
     # Handle point selection
     if not USE_VLM:
         # Human selection mode
-        chosen_point_idx = int(input("\nEnter the index of the point you want to choose: "))
+        chosen_point_idx = int(input("\nEnter the index of the point you want to choose: ")[1:])
     else:
         # VLM selection mode
         chosen_point_response = query_vlm(
@@ -937,6 +937,16 @@ def pick_up_from_point(bot, p3d, camera_frame="camera_color_optical_frame", robo
 SELECTION_PROMPT = """Which point should I grasp to pick up the green alien object? I prefer the point on the body of the object. Only return the point, no other text."""
 
 
+def pick_up_alien(bot):
+    image, depth_image = capture_scene_data()
+    
+    masks, keypoints = generate_keypoints(image)
+    chosen_keypoint = select_keypoint(image, masks, keypoints, SELECTION_PROMPT)
+    p3d = project_to_3d(chosen_keypoint, depth_image)
+    
+    pick_up_from_point(bot, p3d)
+
+
 def main():
     """Main function orchestrating the entire process."""
 
@@ -945,24 +955,20 @@ def main():
         rospy.init_node('steepmind', anonymous=True)
         logger.info("ROS node 'steepmind' initialized")
 
-    bot = initialize_robot()
+    bot = InterbotixManipulatorXS("wx250s", "arm", "gripper", init_node=False)
+    bot.arm.go_to_sleep_pose()
+    bot.gripper.open()
 
     try:
-        image, depth_image = capture_scene_data()
-        
-        masks, keypoints = generate_keypoints(image)
-        chosen_keypoint = select_keypoint(image, masks, keypoints, SELECTION_PROMPT)
-        p3d = project_to_3d(chosen_keypoint, depth_image)
-        
-        # Execute robot actions
-        pick_up_from_point(bot, p3d)
+        pick_up_alien(bot)
+        pass
         
     except Exception as e:
         logger.error(f"Attempt failed: {e}")
         logger.error(traceback.format_exc())
     
-    go_home(bot)
-
+    bot.gripper.open()
+    bot.arm.go_to_sleep_pose()
 
 if __name__ == '__main__':
     import fire
