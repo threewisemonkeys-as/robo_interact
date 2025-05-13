@@ -43,6 +43,11 @@ USE_VLM = True  # Set to False to use human selection instead
 MODEL_NAME = "sam_remote"
 IMAGES_DIR = CUR_DIR / "logs"
 
+
+CAMERA_FRAME = "camera_color_optical_frame"
+ROBOT_FRAME = "wx250s/base_link"
+
+
 # Define custom exception hierarchy
 class RoboMindException(Exception):
     """Base exception for RoboMind operations."""
@@ -354,21 +359,6 @@ def get_sam_mask_generator(
 
     return mask_generator
 
-
-def project_to_3d(pixel_point, depth_image):
-    """
-    Get 3D point from pixel coordinate and validate it.
-    
-    Raises:
-        Point3DException: If 3D point conversion fails
-    """
-    logger.info(f"Getting 3D point for pixel: {pixel_point}")
-    p3d = get_3d_point_from_pixel(pixel_point, depth_image)
-    if p3d is None:
-        raise Point3DException("Could not get 3D point. Check depth data.")
-    
-    logger.info(f"3D point: {p3d}")
-    return p3d
 
 
 def get_3d_point_from_pixel(pixel_coord, depth_image = None):
@@ -767,6 +757,96 @@ def select_keypoint(image, masks, points, prompt):
 
 
 
+def transform_point(point: tuple, source_frame: str, target_frame: str):
+    """
+    Transform point from one frame to another.
+    
+    Args:
+        point (tuple): 3D point coordinates (x, y, z)
+        source_frame (str): Source coordinate frame
+        target_frame (str): Target coordinate frame
+    """
+    logger.info(f"Transforming point {point} from {source_frame} to {target_frame}")
+    
+    # Transform point from camera frame to robot base frame
+    try:        
+        # Create a TF buffer and listener
+        tf_buffer = tf2_ros.Buffer()
+        tf_listener = tf2_ros.TransformListener(tf_buffer)
+        
+        # Wait for the transform to be available
+        logger.info(f"Waiting for transform from {source_frame} to {target_frame}")
+        sleep(1.0)  # Give time for the TF system to initialize
+        
+        # Create a PointStamped message for the camera point
+        point_stamped = geometry_msgs.msg.PointStamped()
+        point_stamped.header.frame_id = source_frame
+        point_stamped.header.stamp = rospy.Time(0)
+        point_stamped.point.x = point[0]
+        point_stamped.point.y = point[1]
+        point_stamped.point.z = point[2]
+        
+        # Transform the point to the robot base frame
+        transformed_point = tf_buffer.transform(point_stamped, target_frame)
+        
+        # Extract the transformed coordinates
+        x = transformed_point.point.x
+        y = transformed_point.point.y
+        z = transformed_point.point.z
+        
+        logger.info(f"Transformed point: ({x}, {y}, {z}) in {target_frame} frame")
+        
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+        logger.error(f"Transform error: {e}")
+        logger.error(traceback.format_exc())
+        raise RobotOperationException(f"Transform error: {e}")
+    
+    # Return the transformed point
+    return np.array([x, y, z])
+
+
+
+def project_to_3d(pixel_point, depth_image):
+    """
+    Get 3D point from pixel coordinate and transform it.
+    
+    Raises:
+        Point3DException: If 3D point conversion fails
+    """
+    logger.info(f"Getting 3D point for pixel: {pixel_point}")
+    p3d = get_3d_point_from_pixel(pixel_point, depth_image)
+    if p3d is None:
+        raise Point3DException("Could not get 3D point. Check depth data.")
+    
+    logger.info(f"3D point in {CAMERA_FRAME}: {p3d}")
+
+    # transform the point to the robot base frame
+    p3d = transform_point(p3d, CAMERA_FRAME, ROBOT_FRAME)
+
+    return p3d
+
+
+
+def set_gripper_orientation(bot: InterbotixManipulatorXS, roll: float = 0, pitch: float = 0, yaw: float = 0):
+    """
+    Set the gripper orientation using roll, pitch, and yaw angles.
+    
+    Args:
+        bot: InterbotixManipulatorXS object
+        roll: Roll angle in radians
+        pitch: Pitch angle in radians
+        yaw: Yaw angle in radians
+    """
+    logger.info(f"Setting gripper orientation to roll={roll}, pitch={pitch}, yaw={yaw}")
+    
+    # Set end-effector pose with specified orientation
+    bot.arm.set_ee_pose_components(
+        roll=roll, pitch=pitch, yaw=yaw
+    )
+    sleep(1.0)  # Give time for the move to complete
+
+
+
 
 def sleep(seconds):
     """Simple wrapper for rospy.sleep with logging."""
@@ -781,6 +861,14 @@ def open_gripper(bot):
     sleep(1.0)
 
 
+def close_gripper(bot):
+    """Close the robot gripper with logging and appropriate sleep."""
+    logger.info("Closing gripper")
+    bot.gripper.close()
+    sleep(1.0)
+
+
+
 def go_home(bot):
     """Move the robot to home position with logging and appropriate sleep."""
     logger.info("Moving arm to home position")
@@ -788,26 +876,17 @@ def go_home(bot):
     sleep(1.0)
 
 
-def initialize_robot():
-    """Initialize the robot arm and prepare it for operations."""
-    bot = InterbotixManipulatorXS("wx250s", "arm", "gripper", init_node=False)
-    go_home(bot)
-    open_gripper(bot)
-    return bot
-
-
-
-def move_to_point(bot, p3d, camera_frame="camera_color_optical_frame", robot_frame="wx250s/base_link"):
+def move_to_point(bot: InterbotixManipulatorXS, x: float, y: float, z: float):
     """
     Move the robot arm to a 3D point
     
     Args:
         bot: InterbotixManipulatorXS object
-        p3d: 3D point in camera frame [x, y, z]
-        camera_frame: The frame ID of the camera
-        robot_frame: The frame ID of the robot base
+        x: X coordinate in camera frame
+        y: Y coordinate in camera frame
+        z: Z coordinate in camera frame
     """
-    logger.info(f"Moving to point {p3d} in {camera_frame} frame")
+    logger.info(f"Moving to point ({x}, {y}, {z}) in {CAMERA_FRAME} frame")
     
     # Transform point from camera frame to robot base frame
     try:        
@@ -816,26 +895,26 @@ def move_to_point(bot, p3d, camera_frame="camera_color_optical_frame", robot_fra
         tf_listener = tf2_ros.TransformListener(tf_buffer)
         
         # Wait for the transform to be available
-        logger.info(f"Waiting for transform from {camera_frame} to {robot_frame}")
+        logger.info(f"Waiting for transform from {CAMERA_FRAME} to {ROBOT_FRAME}")
         sleep(1.0)  # Give time for the TF system to initialize
         
         # Create a PointStamped message for the camera point
         point_stamped = geometry_msgs.msg.PointStamped()
-        point_stamped.header.frame_id = camera_frame
+        point_stamped.header.frame_id = CAMERA_FRAME
         point_stamped.header.stamp = rospy.Time(0)
-        point_stamped.point.x = p3d[0]
-        point_stamped.point.y = p3d[1]
-        point_stamped.point.z = p3d[2]
+        point_stamped.point.x = x
+        point_stamped.point.y = y
+        point_stamped.point.z = z
         
         # Transform the point to the robot base frame
-        transformed_point = tf_buffer.transform(point_stamped, robot_frame)
+        transformed_point = tf_buffer.transform(point_stamped, ROBOT_FRAME)
         
         # Extract the transformed coordinates
         x = transformed_point.point.x
         y = transformed_point.point.y
         z = transformed_point.point.z
         
-        logger.info(f"Transformed point: ({x}, {y}, {z}) in {robot_frame} frame")
+        logger.info(f"Transformed point: ({x}, {y}, {z}) in {ROBOT_FRAME} frame")
         
     except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
         logger.error(f"Transform error: {e}")
@@ -856,91 +935,98 @@ def move_to_point(bot, p3d, camera_frame="camera_color_optical_frame", robot_fra
         raise RobotOperationException(f"Error during arm movement: {e}")
 
 
-def pick_up_from_point(bot, p3d, camera_frame="camera_color_optical_frame", robot_frame="wx250s/base_link"):
+def move_by_offset(bot: InterbotixManipulatorXS, dx: float = 0, dy: float = 0, dz: float = 0):
+    """
+    Move the robot arm by a specified offset.
+    
+    Args:
+        bot: InterbotixManipulatorXS object
+        dx: Offset in x direction
+        dy: Offset in y direction
+        dz: Offset in z direction
+    """
+    logger.info(f"Moving by offset: dx={dx}, dy={dy}, dz={dz}")
+    
+    # Move the end-effector by the specified offset
+    bot.arm.set_ee_cartesian_trajectory(x=dx, y=dy, z=dz)
+    sleep(1.0)  # Give time for the move to complete
+
+
+def rotate_by_offset(bot: InterbotixManipulatorXS, roll: float = 0, pitch: float = 0, yaw: float = 0):
+    """
+    Rotate the gripper by a specified offset.
+    
+    Args:
+        bot: InterbotixManipulatorXS object
+        roll: Roll angle in radians
+        pitch: Pitch angle in radians
+        yaw: Yaw angle in radians
+    """
+    logger.info(f"Rotating by offset: roll={roll}, pitch={pitch}, yaw={yaw}")
+    
+    # Rotate the end-effector by the specified angles
+    bot.arm.set_ee_pose_components(
+        roll=roll, pitch=pitch, yaw=yaw
+    )
+    sleep(1.0)  # Give time for the move to complete
+
+
+
+def set_gripper_pose(bot: InterbotixManipulatorXS, x: float, y: float, z: float, roll: float = 0, pitch: float = 0, yaw: float = 0):
+    """
+    Set the gripper pose using position and orientation.
+    
+    Args:
+        bot: InterbotixManipulatorXS object
+        x: X coordinate in camera frame
+        y: Y coordinate in camera frame
+        z: Z coordinate in camera frame
+        roll: Roll angle in radians
+        pitch: Pitch angle in radians
+        yaw: Yaw angle in radians
+    """
+    logger.info(f"Setting gripper pose to x={x}, y={y}, z={z}, roll={roll}, pitch={pitch}, yaw={yaw}")
+    
+    # Set end-effector pose with specified position and orientation
+    bot.arm.set_ee_pose_components(
+        x=x, y=y, z=z,
+        roll=roll, pitch=pitch, yaw=yaw
+    )
+    sleep(2.0)  # Give time for the move to complete
+
+
+def pick_up_from_point(bot, p3d):
     """
     Move the robot arm to a 3D point and pick up an object.
     
     Args:
         bot: InterbotixManipulatorXS object
-        p3d: 3D point in camera frame [x, y, z]
-        camera_frame: The frame ID of the camera
-        robot_frame: The frame ID of the robot base
+        p3d: 3D point in robot frame [x, y, z]
     """
-    logger.info(f"Moving to point {p3d} in {camera_frame} frame")
+    # Extract coordinates from the 3D point
+    x, y, z = p3d
     
-    # Transform point from camera frame to robot base frame
-    try:        
-        # Create a TF buffer and listener
-        tf_buffer = tf2_ros.Buffer()
-        tf_listener = tf2_ros.TransformListener(tf_buffer)
-        
-        # Wait for the transform to be available
-        logger.info(f"Waiting for transform from {camera_frame} to {robot_frame}")
-        sleep(1.0)  # Give time for the TF system to initialize
-        
-        # Create a PointStamped message for the camera point
-        point_stamped = geometry_msgs.msg.PointStamped()
-        point_stamped.header.frame_id = camera_frame
-        point_stamped.header.stamp = rospy.Time(0)
-        point_stamped.point.x = p3d[0]
-        point_stamped.point.y = p3d[1]
-        point_stamped.point.z = p3d[2]
-        
-        # Transform the point to the robot base frame
-        transformed_point = tf_buffer.transform(point_stamped, robot_frame)
-        
-        # Extract the transformed coordinates
-        x = transformed_point.point.x
-        y = transformed_point.point.y
-        z = transformed_point.point.z
-        
-        logger.info(f"Transformed point: ({x}, {y}, {z}) in {robot_frame} frame")
-        
-    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-        logger.error(f"Transform error: {e}")
-        raise RobotOperationException(f"Transform error: {e}")
+    # First move to a position slightly above the target
+    approach_z_offset = 0.1  # Increased for more clearance when approaching vertically
     
-    try:
-        
-        # First move to a position slightly above the target
-        approach_z_offset = 0.1  # Increased for more clearance when approaching vertically
-        logger.info(f"Moving to approach position: ({x}, {y}, {z + approach_z_offset})")
-        
-        # Set end-effector pose with downward-pointing orientation
-        # Roll = 0, Pitch = 1.5708 (90 degrees), Yaw = 0
-        # This makes the gripper point downward (along negative Z-axis)
-        bot.arm.set_ee_pose_components(
-            x=x, y=y, z=z + approach_z_offset,
-            roll=0, pitch=1.5708, yaw=0
-        )
-        sleep(2.0)  # Give time for the move to complete
-        
-        # Move down to the target position
-        logger.info(f"Moving to grasp position: ({x}, {y}, {z+0.05})")
-        bot.arm.set_ee_cartesian_trajectory(z=-approach_z_offset)  # Move down relative to current position
-        sleep(1.5)
-        
-        # Close the gripper to grasp the object
-        logger.info("Closing gripper")
-        bot.gripper.close()
-        sleep(1.0)
-        
-        # Lift the object
-        logger.info("Lifting object")
-        bot.arm.set_ee_cartesian_trajectory(z=approach_z_offset*2)  # Move up relative to current position
-        sleep(1.5)
-        
-        logger.info("Object picked up successfully")
-        
-    except Exception as e:
-        logger.error(f"Error during arm movement: {e}")
-        logger.error(traceback.format_exc())
-        # Try to recover by going to home position
-        go_home(bot)
-        raise RobotOperationException(f"Error during arm movement: {e}")
+    # Set end-effector pose with downward-pointing orientation
+    # Roll = 0, Pitch = 1.5708 (90 degrees), Yaw = 0
+    # This makes the gripper point downward (along negative Z-axis)
+    set_gripper_pose(bot, x, y, z + approach_z_offset, roll=0, pitch=1.5708, yaw=0)
+    
+    # Move down to the target position
+    move_by_offset(bot, dz=-approach_z_offset)
+    
+    # Close the gripper to grasp the object
+    close_gripper(bot)
+    
+    # Lift the object
+    move_by_offset(bot, dz=approach_z_offset * 2)
+    
 
 
-SELECTION_PROMPT = """Which point should I grasp to pick up the green alien object? I prefer the point on the body of the object. Only return the point, no other text."""
+
+SELECTION_PROMPT = """Which point should I grasp to pick up the green object? I prefer the point on the body of the object. Only return the point, no other text."""
 
 
 def pick_up_alien(bot):
