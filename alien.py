@@ -36,7 +36,7 @@ import geometry_msgs.msg
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 
 from cs2 import SAMClient
-from call_llm import code_for_request
+
 
 CUR_DIR = Path(__file__).resolve().parent
 
@@ -712,10 +712,7 @@ def set_gripper_orientation(bot: InterbotixManipulatorXS,
 
 ### START OF DSL ###
 
-
-VQA_PROMPT = "Answer the following question in a decisive short and concise manner. If the question is yes or no, answer with 'yes' or 'no'. Dont say I dont know. Make a decision. Otherwise follow the instructions given: {prompt}"
-
-def visual_qa(image: Image.Image, prompt: str) -> str:
+def query_vlm(image: Image.Image, prompt: str) -> str:
     """
     Query a Vision Language Model (VLM) with a PIL image and prompt.
     This function sends an image and text prompt to GPT-4o and returns
@@ -748,7 +745,7 @@ def visual_qa(image: Image.Image, prompt: str) -> str:
                 "role": "user",
                 "content": [
                     {"type": "text",
-                     "text": VQA_PROMPT.format(prompt=prompt)},
+                     "text": prompt},
                     {"type": "image_url",
                      "image_url": {
                          "url": image_data_url,
@@ -947,7 +944,7 @@ def select_keypoint(image: Image.Image,
         chosen_point_idx = int(input("\nEnter the index of the point you want to choose: ")[1:])
     else:
         # VLM selection mode
-        chosen_point_response = visual_qa(
+        chosen_point_response = query_vlm(
             image=Image.open(visualization_path),
             prompt=SELECT_KP_PROMPT.format(purpose=prompt),
         )
@@ -957,7 +954,6 @@ def select_keypoint(image: Image.Image,
     chosen_point = points[chosen_point_idx]
     print(f"Chosen point: {chosen_point}")
     return chosen_point
-
 
 def project_to_3d(pixel_point: Tuple[int, int], 
                  depth_image: np.ndarray) -> np.ndarray:
@@ -1049,20 +1045,6 @@ def go_home(bot: InterbotixManipulatorXS) -> None:
     sleep(1.0)
 
 
-def go_rest(bot: InterbotixManipulatorXS) -> None:
-    """
-    Move the robot to rest position.
-    
-    This function moves the robot arm to its rest position and waits
-    for the operation to complete.
-    
-    Args:
-        bot: InterbotixManipulatorXS object
-    """
-    logger.info("Moving arm to rest position")
-    bot.arm.go_to_sleep_pose()
-    sleep(1.0)
-
 def move_to_point(bot: InterbotixManipulatorXS, 
                  x: float, 
                  y: float, 
@@ -1079,6 +1061,8 @@ def move_to_point(bot: InterbotixManipulatorXS,
     Raises:
         RobotOperationException: If the movement fails
     """
+    x, y, z = transform_point((x, y, z), ROBOT_FRAME, CAMERA_FRAME)
+    
     try:
         logger.info(f"Moving to position: ({x}, {y}, {z})")
         bot.arm.set_ee_pose_components(
@@ -1177,23 +1161,24 @@ def set_gripper_pose(bot: InterbotixManipulatorXS,
 
 ### END OF DSL ###
 
-def pick_up_from_point(bot: InterbotixManipulatorXS,
-                      p3d: np.ndarray) -> None:
-    """
-    Move the robot arm to a 3D point and pick up an object.
+SELECTION_PROMPT = """Which point should I grasp to pick up the green object? I prefer the point on the body of the object. Only return the point, no other text."""
+
+# SELECTION_PROMPT = """Which point should I grasp to pick up the the more rigid object? I prefer the point on the body of the object. Only return the point, no other text."""
+
+
+
+def control_robot(bot):
+    image, depth_image = capture_scene_data()
     
-    This function performs a pick-up operation at the specified 3D point.
-    It approaches from above, closes the gripper, and lifts the object.
+    masks, keypoints = generate_keypoints(image)
+    chosen_keypoint = select_keypoint(image, masks, keypoints, SELECTION_PROMPT)
+    p3d = project_to_3d(chosen_keypoint, depth_image)
     
-    Args:
-        bot: InterbotixManipulatorXS object
-        p3d: 3D point in robot frame [x, y, z]
-    """
-    # Extract coordinates from the 3D point
-    x, y, z = p3d
     
     # First move to a position slightly above the target
     approach_z_offset = 0.1  # Increased for more clearance when approaching vertically
+
+    x, y, z = p3d
     
     # Set end-effector pose with downward-pointing orientation
     # Roll = 0, Pitch = 1.5708 (90 degrees), Yaw = 0
@@ -1210,116 +1195,45 @@ def pick_up_from_point(bot: InterbotixManipulatorXS,
     move_by_offset(bot, dz=approach_z_offset * 2)
 
 
-control_robot_str = """def control_robot(bot: InterbotixManipulatorXS):
-    while True:                                                                                                                                                    
-        image, depth_image = capture_scene_data()                                                                                                                  
-        # Ask the VLM for a list of objects on the table.                                                                                                          
-        objects_response = visual_qa(image, "Provide a comma separated list of object names on the table. If the table is clear, reply with 'clear'.")             
-        objects_response = objects_response.strip().lower()                                                                                                        
-        if objects_response == "clear" or objects_response == "":                                                                                                  
-            break                                                                                                                                                  
-        object_names = [name.strip() for name in objects_response.split(",") if name.strip()]                                                                      
-        if not object_names:                                                                                                                                       
-            break                                                                                                                                                  
-        # Pick up the first object in the list.                                                                                                                    
-        target_object = object_names[0]                                                                                                                            
-        masks, keypoints = generate_keypoints(image)                                                                                                               
-        pixel_point = select_keypoint(image, masks, keypoints, f"pick up {target_object}")                                                                         
-        # Ensure pixel_point is a tuple of ints for the projection.                                                                                                
-        pixel_point = (int(pixel_point[0]), int(pixel_point[1]))                                                                                                   
-        object_3d_point = project_to_3d(pixel_point, depth_image)                                                                                                  
-        # Approach point: 0.1 m above object, with gripper pointed downwards (pitch +90 degrees).                                                                  
-        set_gripper_pose(bot, object_3d_point[0], object_3d_point[1], object_3d_point[2] + 0.1, 0, 1.5708, 0)                                                      
-        # Lower the gripper to 0.02 m below the object's surface.                                                                                                  
-        set_gripper_pose(bot, object_3d_point[0], object_3d_point[1], object_3d_point[2] - 0.02, 0, 1.5708, 0)                                                     
-        close_gripper(bot)                                                                                                                                         
-        go_home(bot)                                                                                                                                               
-        open_gripper(bot)                                                                                                                                          
-        sleep(2.0)"""
+def control_robot(bot):
+    image, depth_image = capture_scene_data()                                                                                    
+    masks, keypoints = generate_keypoints(image)                                                                                 
+    green_alien_point = select_keypoint(image, masks, keypoints, "green alien figure")                                                  
+    position_3d = project_to_3d(green_alien_point, depth_image)                                                                  
+                                                                                                                                    
+    x, y, z = position_3d                                                                                                        
+    z += 0.1  # Move slightly above the ground                                                                                      
+    set_gripper_pose(bot, x, y, z, roll=0, pitch=1.5708, yaw=0)  # Point gripper downwards                                                                                                                         
+    z -= 0.12  # Move down to the ground level                                                                                    
+    set_gripper_pose(bot, x, y, z, roll=0, pitch=1.5708, yaw=0)  # Adjust gripper position                                       
+    close_gripper(bot)   
+    move_by_offset(bot, dz=0.1)  # Lift the object                              
+    go_home(bot)
+    open_gripper(bot)  # Release the object
 
 
 def main():
+    """Main function orchestrating the entire process."""
+
+    # Initialize ROS node if not already initialized
+    if not rospy.core.is_initialized():
+        rospy.init_node('steepmind', anonymous=True)
+        logger.info("ROS node 'steepmind' initialized")
+
+    bot = InterbotixManipulatorXS("wx250s", "arm", "gripper", init_node=False)
+    bot.arm.go_to_sleep_pose()
+    bot.gripper.open()
+
     try:
-
-        # Initialize ROS node if not already initialized
-        if not rospy.core.is_initialized():
-            rospy.init_node('steepmind', anonymous=True)
-            logger.info("ROS node 'steepmind' initialized")
-
-        bot = InterbotixManipulatorXS("wx250s", "arm", "gripper", init_node=False)
-        bot.arm.go_to_sleep_pose()
-        bot.gripper.open()
-
-
-        user_prompt = input("What do you want the robot to do?\n")
-        # user_prompt = "pick up the objects and use the visual qa to find which object is squishy (gets deformed when the gripper squeezes it) and hand it to me"
-        control_robot_str = code_for_request(user_prompt)
-        logger.info(f"Control robot code:\n{control_robot_str}")
-        
-        # Compile the string into a code object
-        logger.info("Compiling control_robot function...")
-        try:
-            compiled_func = compile(control_robot_str, '<control_robot>', 'exec')
-        except SyntaxError as e:
-            line_number = e.lineno
-            offset = e.offset
-            line = control_robot_str.splitlines()[line_number-1] if line_number <= len(control_robot_str.splitlines()) else "Unknown line"
-            logger.error(f"Syntax error in control_robot: line {line_number}, offset {offset}")
-            logger.error(f"Error line content: {line}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"Control function compilation failed due to syntax error: {e}")
-        except Exception as e:
-            logger.error(f"Failed to compile control_robot: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"Control function compilation failed: {e}")
-        
-        # Create a namespace for execution
-        namespace = globals().copy()
-        
-        # Execute the compiled function definition
-        logger.info("Executing compiled control_robot function definition...")
-        try:
-            exec(compiled_func, namespace)
-        except Exception as e:
-            logger.error(f"Failed to execute compiled function definition: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"Control function definition execution failed: {e}")
-        
-        # Verify the function exists in the namespace
-        if 'control_robot' not in namespace:
-            error_msg = "The control_robot function was not properly defined in the executed code"
-            logger.error(error_msg)
-            raise NameError(error_msg)
-        
-        # Call the function
-        logger.info("Calling control_robot function...")
-        try:
-            namespace['control_robot'](bot)
-        except Exception as e:
-            logger.error(f"Error during control_robot execution: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"Control function execution failed: {e}")
-            
-        logger.info("Robot control completed successfully")
+        control_robot(bot)
+        pass
         
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(f"Attempt failed: {e}")
         logger.error(traceback.format_exc())
-        print(f"ERROR: {e}")
-
-    finally:
-        # Ensure cleanup happens regardless of errors
-        if bot is not None:
-            logger.info("Performing robot cleanup...")
-            try:
-                bot.gripper.open()
-                bot.arm.go_to_sleep_pose()
-                sleep(2.0)
-                logger.info("Robot shutdown complete")
-            except Exception as e:
-                logger.error(f"Error during robot cleanup: {e}")
-                logger.error(traceback.format_exc())
-
+    
+    bot.gripper.open()
+    bot.arm.go_to_sleep_pose()
 
 if __name__ == '__main__':
     import fire
