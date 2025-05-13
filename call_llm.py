@@ -45,6 +45,22 @@ def pick_up_from_point(bot: InterbotixManipulatorXS, p3d: np.ndarray) -> None:
     close_gripper(bot)
     move_by_offset(bot, dz=APPROACH_Z * 2)
 
+# ------------- helper primitives you MAY call -------------
+query_vlm(image_path: Path, prompt: str)  -> str
+capture_scene_data(directory: Path = IMAGES_DIR) -> Tuple[Image.Image, np.ndarray]
+generate_keypoints(image: Image.Image,model_name: str = MODEL_NAME, seed: int = 42) -> Tuple[List[Dict[str, Any]], np.ndarray]
+select_keypoint(image: Image.Image, masks: List[Dict[str, Any]], points: np.ndarray, prompt: str) -> np.ndarray
+project_to_3d(pixel_point: Tuple[int, int], depth_image: np.ndarray) -> np.ndarray
+sleep(seconds: float) -> None
+open_gripper(bot: InterbotixManipulatorXS) -> None
+close_gripper(bot: InterbotixManipulatorXS) -> None
+go_home(bot: InterbotixManipulatorXS) -> None
+move_to_point(bot: InterbotixManipulatorXS, x: float, y: float, z: float) -> None
+move_by_offset(bot: InterbotixManipulatorXS, dx: float = 0, dy: float = 0, dz: float = 0) -> None
+rotate_by_offset(bot: InterbotixManipulatorXS, roll: float = 0, pitch: float = 0, yaw: float = 0) -> None
+set_gripper_pose(bot: InterbotixManipulatorXS, x: float, y: float, z: float, roll: float = 0, pitch: float = 0, yaw: float = 0) -> None
+logger -> logging.Logger
+
 # ---------- TASK ----------
 Implement BOTH of these TODOs in robot_control.py
 
