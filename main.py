@@ -587,6 +587,131 @@ def create_text_marker(point_3d: np.ndarray,
     return marker
 
 
+def capture_live_image(bridge: Optional[CvBridge] = None) -> Optional[Image.Image]:
+    """
+    Capture a live image from the RealSense camera.
+    
+    This function captures a live RGB image from the RealSense camera
+    using ROS.
+    
+    Args:
+        bridge: CvBridge for converting ROS images (created if None)
+        
+    Returns:
+        Captured PIL image from the camera, or None if capture fails
+    """
+    if bridge is None:
+        bridge = CvBridge()
+    
+    logger.info("Waiting for color image from camera...")
+    try:
+        # Wait for a color image from the RealSense camera
+        color_msg = rospy.wait_for_message('/camera/color/image_raw', ROSSensorImage, timeout=5.0)
+        logger.info("Color image received successfully")
+        
+        # Convert ROS image to OpenCV format
+        cv_image = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+        
+        # Convert OpenCV image to PIL Image
+        pil_image = Image.fromarray(cv_image)
+        
+        return pil_image
+    except Exception as e:
+        logger.error(f"Failed to capture live image: {e}")
+        logger.error(traceback.format_exc())
+        return None
+
+
+
+def transform_point(point: Tuple[float, float, float], 
+                   source_frame: str, 
+                   target_frame: str) -> np.ndarray:
+    """
+    Transform point from one coordinate frame to another.
+    
+    This function uses ROS TF2 to transform a 3D point from one
+    coordinate frame to another.
+    
+    Args:
+        point: 3D point coordinates (x, y, z)
+        source_frame: Source coordinate frame
+        target_frame: Target coordinate frame
+    
+    Returns:
+        Transformed point as numpy array [x, y, z]
+    
+    Raises:
+        RobotOperationException: If the transform fails
+    """
+    logger.info(f"Transforming point {point} from {source_frame} to {target_frame}")
+    
+    # Transform point from camera frame to robot base frame
+    try:        
+        # Create a TF buffer and listener
+        tf_buffer = tf2_ros.Buffer()
+        tf_listener = tf2_ros.TransformListener(tf_buffer)
+        
+        # Wait for the transform to be available
+        logger.info(f"Waiting for transform from {source_frame} to {target_frame}")
+        sleep(1.0)  # Give time for the TF system to initialize
+        
+        # Create a PointStamped message for the camera point
+        point_stamped = geometry_msgs.msg.PointStamped()
+        point_stamped.header.frame_id = source_frame
+        point_stamped.header.stamp = rospy.Time(0)
+        point_stamped.point.x = point[0]
+        point_stamped.point.y = point[1]
+        point_stamped.point.z = point[2]
+        
+        # Transform the point to the robot base frame
+        transformed_point = tf_buffer.transform(point_stamped, target_frame)
+        
+        # Extract the transformed coordinates
+        x = transformed_point.point.x
+        y = transformed_point.point.y
+        z = transformed_point.point.z
+        
+        logger.info(f"Transformed point: ({x}, {y}, {z}) in {target_frame} frame")
+        
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+        logger.error(f"Transform error: {e}")
+        logger.error(traceback.format_exc())
+        raise RobotOperationException(f"Transform error: {e}")
+    
+    # Return the transformed point
+    return np.array([x, y, z])
+
+
+
+def set_gripper_orientation(bot: InterbotixManipulatorXS, 
+                           roll: float = 0, 
+                           pitch: float = 0, 
+                           yaw: float = 0) -> None:
+    """
+    Set the gripper orientation using roll, pitch, and yaw angles.
+    
+    This function sets the orientation of the robot gripper using
+    Euler angles.
+    
+    Args:
+        bot: InterbotixManipulatorXS object
+        roll: Roll angle in radians
+        pitch: Pitch angle in radians
+        yaw: Yaw angle in radians
+    """
+    logger.info(f"Setting gripper orientation to roll={roll}, pitch={pitch}, yaw={yaw}")
+    
+    # Set end-effector pose with specified orientation
+    bot.arm.set_ee_pose_components(
+        roll=roll, pitch=pitch, yaw=yaw
+    )
+    sleep(1.0)  # Give time for the move to complete
+
+
+
+### START OF DSL ###
+
+
 def query_vlm(image_path: Path, prompt: str) -> str:
     """
     Query a Vision Language Model (VLM) with an image and prompt.
@@ -691,41 +816,6 @@ def capture_scene_data(directory: Path = IMAGES_DIR) -> Tuple[Image.Image, np.nd
     logger.info(f"Depth visualization saved to: {depth_vis_path}")
     
     return image, depth_image
-
-
-def capture_live_image(bridge: Optional[CvBridge] = None) -> Optional[Image.Image]:
-    """
-    Capture a live image from the RealSense camera.
-    
-    This function captures a live RGB image from the RealSense camera
-    using ROS.
-    
-    Args:
-        bridge: CvBridge for converting ROS images (created if None)
-        
-    Returns:
-        Captured PIL image from the camera, or None if capture fails
-    """
-    if bridge is None:
-        bridge = CvBridge()
-    
-    logger.info("Waiting for color image from camera...")
-    try:
-        # Wait for a color image from the RealSense camera
-        color_msg = rospy.wait_for_message('/camera/color/image_raw', ROSSensorImage, timeout=5.0)
-        logger.info("Color image received successfully")
-        
-        # Convert ROS image to OpenCV format
-        cv_image = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
-        
-        # Convert OpenCV image to PIL Image
-        pil_image = Image.fromarray(cv_image)
-        
-        return pil_image
-    except Exception as e:
-        logger.error(f"Failed to capture live image: {e}")
-        logger.error(traceback.format_exc())
-        return None
 
 
 def generate_keypoints(image: Image.Image, 
@@ -859,66 +949,6 @@ def select_keypoint(image: Image.Image,
     return chosen_point
 
 
-def transform_point(point: Tuple[float, float, float], 
-                   source_frame: str, 
-                   target_frame: str) -> np.ndarray:
-    """
-    Transform point from one coordinate frame to another.
-    
-    This function uses ROS TF2 to transform a 3D point from one
-    coordinate frame to another.
-    
-    Args:
-        point: 3D point coordinates (x, y, z)
-        source_frame: Source coordinate frame
-        target_frame: Target coordinate frame
-    
-    Returns:
-        Transformed point as numpy array [x, y, z]
-    
-    Raises:
-        RobotOperationException: If the transform fails
-    """
-    logger.info(f"Transforming point {point} from {source_frame} to {target_frame}")
-    
-    # Transform point from camera frame to robot base frame
-    try:        
-        # Create a TF buffer and listener
-        tf_buffer = tf2_ros.Buffer()
-        tf_listener = tf2_ros.TransformListener(tf_buffer)
-        
-        # Wait for the transform to be available
-        logger.info(f"Waiting for transform from {source_frame} to {target_frame}")
-        sleep(1.0)  # Give time for the TF system to initialize
-        
-        # Create a PointStamped message for the camera point
-        point_stamped = geometry_msgs.msg.PointStamped()
-        point_stamped.header.frame_id = source_frame
-        point_stamped.header.stamp = rospy.Time(0)
-        point_stamped.point.x = point[0]
-        point_stamped.point.y = point[1]
-        point_stamped.point.z = point[2]
-        
-        # Transform the point to the robot base frame
-        transformed_point = tf_buffer.transform(point_stamped, target_frame)
-        
-        # Extract the transformed coordinates
-        x = transformed_point.point.x
-        y = transformed_point.point.y
-        z = transformed_point.point.z
-        
-        logger.info(f"Transformed point: ({x}, {y}, {z}) in {target_frame} frame")
-        
-    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-        logger.error(f"Transform error: {e}")
-        logger.error(traceback.format_exc())
-        raise RobotOperationException(f"Transform error: {e}")
-    
-    # Return the transformed point
-    return np.array([x, y, z])
-
-
-
 def project_to_3d(pixel_point: Tuple[int, int], 
                  depth_image: np.ndarray) -> np.ndarray:
     """
@@ -951,34 +981,6 @@ def project_to_3d(pixel_point: Tuple[int, int],
     return p3d
 
 
-
-def set_gripper_orientation(bot: InterbotixManipulatorXS, 
-                           roll: float = 0, 
-                           pitch: float = 0, 
-                           yaw: float = 0) -> None:
-    """
-    Set the gripper orientation using roll, pitch, and yaw angles.
-    
-    This function sets the orientation of the robot gripper using
-    Euler angles.
-    
-    Args:
-        bot: InterbotixManipulatorXS object
-        roll: Roll angle in radians
-        pitch: Pitch angle in radians
-        yaw: Yaw angle in radians
-    """
-    logger.info(f"Setting gripper orientation to roll={roll}, pitch={pitch}, yaw={yaw}")
-    
-    # Set end-effector pose with specified orientation
-    bot.arm.set_ee_pose_components(
-        roll=roll, pitch=pitch, yaw=yaw
-    )
-    sleep(1.0)  # Give time for the move to complete
-
-
-
-
 def sleep(seconds: float) -> None:
     """
     Pause execution for the specified time with logging.
@@ -990,6 +992,7 @@ def sleep(seconds: float) -> None:
     """
     logger.info(f"Sleeping for {seconds} seconds")
     rospy.sleep(seconds)
+
 
 def open_gripper(bot: InterbotixManipulatorXS) -> None:
     """
@@ -1148,6 +1151,9 @@ def set_gripper_pose(bot: InterbotixManipulatorXS,
     )
     sleep(2.0)  # Give time for the move to complete
 
+
+
+### END OF DSL ###
 
 def pick_up_from_point(bot: InterbotixManipulatorXS,
                       p3d: np.ndarray) -> None:
